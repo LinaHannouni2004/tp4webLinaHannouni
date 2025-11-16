@@ -17,13 +17,11 @@ import dev.langchain4j.rag.RetrievalAugmentor;
 import dev.langchain4j.rag.content.retriever.ContentRetriever;
 import dev.langchain4j.rag.content.retriever.EmbeddingStoreContentRetriever;
 import dev.langchain4j.rag.content.retriever.WebSearchContentRetriever;
-import dev.langchain4j.rag.query.router.DefaultQueryRouter;
 import dev.langchain4j.rag.query.router.LanguageModelQueryRouter;
 import dev.langchain4j.store.embedding.EmbeddingStore;
 import dev.langchain4j.store.embedding.inmemory.InMemoryEmbeddingStore;
 import dev.langchain4j.web.search.WebSearchEngine;
 import dev.langchain4j.web.search.tavily.TavilyWebSearchEngine;
-
 import dev.langchain4j.service.AiServices;
 import dev.langchain4j.data.message.SystemMessage;
 
@@ -33,7 +31,6 @@ import ma.emsi.linahannouni.tp4weblinahannouni.assistant.Assistant;
 import java.io.Serializable;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.net.URISyntaxException;
 import java.util.*;
 
 @Dependent
@@ -45,11 +42,26 @@ public class LlmClient implements Serializable {
 
     private String systemRole;
 
+    // -------- LOGGER --------
+    private static void configureLogger() {
+        java.util.logging.Logger logger = java.util.logging.Logger.getLogger("dev.langchain4j");
+        logger.setUseParentHandlers(false);
+        logger.setLevel(java.util.logging.Level.FINE);
+
+        java.util.logging.ConsoleHandler handler = new java.util.logging.ConsoleHandler();
+        handler.setLevel(java.util.logging.Level.FINE);
+
+        logger.addHandler(handler);
+    }
+
     public LlmClient() {
+
+        configureLogger();
 
         String key = System.getenv("GEMINI_KEY");
         String tavilyKey = System.getenv("TAVILY_API_KEY");
 
+        // --- LLM Gemini
         model = GoogleAiGeminiChatModel.builder()
                 .apiKey(key)
                 .modelName("gemini-2.5-flash")
@@ -57,32 +69,32 @@ public class LlmClient implements Serializable {
                 .logRequestsAndResponses(true)
                 .build();
 
-        // --- Embedding model
+        // --- Embedding Model
         EmbeddingModel embeddingModel = new AllMiniLmL6V2EmbeddingModel();
 
-        // --- PDF 1
+
         EmbeddingStore<TextSegment> store1 = new InMemoryEmbeddingStore<>();
         ingest("rag.pdf", store1, embeddingModel);
 
-        ContentRetriever retriever1 = EmbeddingStoreContentRetriever.builder()
+        ContentRetriever retrieverRag = EmbeddingStoreContentRetriever.builder()
                 .embeddingModel(embeddingModel)
                 .embeddingStore(store1)
                 .maxResults(3)
                 .minScore(0.4)
                 .build();
 
-        // --- PDF 2
+
         EmbeddingStore<TextSegment> store2 = new InMemoryEmbeddingStore<>();
         ingest("Support.pdf", store2, embeddingModel);
 
-        ContentRetriever retriever2 = EmbeddingStoreContentRetriever.builder()
+        ContentRetriever retrieverGL = EmbeddingStoreContentRetriever.builder()
                 .embeddingModel(embeddingModel)
                 .embeddingStore(store2)
                 .maxResults(3)
                 .minScore(0.4)
                 .build();
 
-        // --- Web Search (Test 5)
+
         WebSearchEngine tavily = TavilyWebSearchEngine.builder()
                 .apiKey(tavilyKey)
                 .build();
@@ -92,18 +104,18 @@ public class LlmClient implements Serializable {
                 .maxResults(3)
                 .build();
 
-        // --- Routage LM (Test 3)
-        Map<ContentRetriever, String> descriptions = new HashMap<>();
-        descriptions.put(retriever1, "Document sur le RAG, IA, embeddings, LangChain4j");
-        descriptions.put(retriever2, "Document sur MQL, génie logiciel, modèles conceptuels");
-        descriptions.put(webRetriever, "Informations recherchées sur le Web");
+        Map<ContentRetriever, String> descriptions = new LinkedHashMap<>();
+        descriptions.put(retrieverRag, "Document sur le RAG, IA, LLM, embeddings, retrieval.");
+        descriptions.put(retrieverGL, "Document sur MQL, génie logiciel, qualité, ISO 25010.");
+        descriptions.put(webRetriever, "Recherche Web via Tavily.");
 
-        LanguageModelQueryRouter lmRouter = new LanguageModelQueryRouter(model, descriptions);
+        LanguageModelQueryRouter router = new LanguageModelQueryRouter(model, descriptions);
 
-        // --- Retrieval Augmentor
+
         RetrievalAugmentor augmentor = DefaultRetrievalAugmentor.builder()
-                .queryRouter(lmRouter)
+                .queryRouter(router)
                 .build();
+
 
         memory = MessageWindowChatMemory.withMaxMessages(10);
 
@@ -115,7 +127,6 @@ public class LlmClient implements Serializable {
     }
 
 
-
     public void setSystemRole(String role) {
         this.systemRole = role;
         memory.clear();
@@ -124,24 +135,29 @@ public class LlmClient implements Serializable {
         }
     }
 
+
     public String envoyerQuestion(String question) {
         return assistant.chat(question);
     }
 
 
-    // ---------------- PDF ingestion utility ---------------------
     private void ingest(String filename, EmbeddingStore<TextSegment> store, EmbeddingModel model) {
         try {
             Path path = Paths.get(Objects.requireNonNull(
                     getClass().getClassLoader().getResource(filename)
             ).toURI());
+
             Document doc = FileSystemDocumentLoader.loadDocument(path, new ApacheTikaDocumentParser());
+
             var splitter = DocumentSplitters.recursive(300, 30);
             List<TextSegment> segments = splitter.split(doc);
-            List<Embedding> embeds = model.embedAll(segments).content();
-            store.addAll(embeds, segments);
+
+            List<Embedding> embeddings = model.embedAll(segments).content();
+
+            store.addAll(embeddings, segments);
+
         } catch (Exception e) {
-            throw new RuntimeException(e);
+            throw new RuntimeException("Erreur ingestion PDF : " + filename, e);
         }
     }
 }
